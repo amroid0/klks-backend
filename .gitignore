@@ -37,6 +37,9 @@ composer.lock
 
 # Misc
 /_MACOSX/
+/_MACOSX/
+__MACOSX/
+storage/app/backups/
 *.zip
 etaxi.zip
 db_check.txt
