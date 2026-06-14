@@ -1,0 +1,50 @@
+# Operating systems
+.DS_Store
+Thumbs.db
+
+# Editor directories and files
+.vscode/
+.idea/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+
+# Composer / PHP
+/vendor/
+composer.lock
+
+# Laravel
+.env
+.env.*.local
+.phpunit.result.cache
+/public/hot
+/public/storage
+/storage/*.key
+/storage/debugbar
+/storage/debugbar/*
+/storage/framework/cache/data/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+/storage/logs/*
+
+# Build outputs
+/public/build/
+/dist/
+/build/
+
+# Misc
+/_MACOSX/
+*.zip
+etaxi.zip
+db_check.txt
+e-Taxi-Documentation.docx
+*.sqlite
+
+# IDE / tooling
+/.cache/
+coverage/
+*.log
+
