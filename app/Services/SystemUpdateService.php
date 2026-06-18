@@ -468,7 +468,7 @@ class SystemUpdateService
     {
       return [
                 'success' => true,
-                'message' => 'Purchase code validated successfully'
+                'message' => $response['message'] ?? 'Purchase code validated successfully'
             ];
     }
 
