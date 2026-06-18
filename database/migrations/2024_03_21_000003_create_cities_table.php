@@ -10,13 +10,13 @@ return new class extends Migration
     {
         Schema::create('cities', function (Blueprint $table) {
             $table->id();
-            $table->string('name');
-            $table->string('state')->nullable();
-            $table->string('country')->default('India');
+            $table->string('name',50);
+            $table->string('state',50)->nullable();
+            $table->string('country',50)->default('Egypt');
             $table->decimal('latitude', 10, 8);
             $table->decimal('longitude', 10, 8);
             $table->boolean('status')->default(true);
-            $table->string('timezone')->default('Asia/Kolkata');
+            $table->string('timezone')->default('Africa/Cairo');
             $table->string('currency')->default('EGP');
             
             // Service Hours

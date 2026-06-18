@@ -19,8 +19,8 @@ return new class extends Migration
             $table->foreignId('dropoff_zone_id')->constrained('zones');
             
             // Locations
-            $table->text('pickup_location');
-            $table->text('dropoff_location');
+            $table->string('pickup_location', 120);
+            $table->string('dropoff_location', 120);
             $table->text('pickup_address');
             $table->text('dropoff_address');
             
