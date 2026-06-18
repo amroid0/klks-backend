@@ -14,7 +14,7 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        Schema::defaultStringLength(191);
+        Schema::defaultStringLength(120);
 
         // Clean output for Livewire requests to prevent JSON parsing errors
         $request = request();
