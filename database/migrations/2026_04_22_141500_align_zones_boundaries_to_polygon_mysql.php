@@ -16,6 +16,12 @@ return new class extends Migration
             return;
         }
 
+        // 1. Drop any existing index on 'boundaries' to unlock the column modification
+        $indexes = DB::select("SHOW INDEX FROM zones WHERE Column_name = 'boundaries'");
+        foreach ($indexes as $index) {
+            DB::statement("ALTER TABLE zones DROP INDEX {$index->Key_name}");
+        }
+
         $column = DB::selectOne("
             SELECT COLUMN_TYPE
             FROM information_schema.COLUMNS
@@ -29,18 +35,16 @@ return new class extends Migration
             return;
         }
 
+        // 2. Change column to POLYGON NOT NULL (Spatial indexes require NOT NULL)
         if (str_contains(strtolower((string) $column->COLUMN_TYPE), 'polygon')) {
-            $this->dropBoundariesTextIndexIfExists();
-            DB::statement("ALTER TABLE zones MODIFY boundaries POLYGON NULL");
-            $this->createBoundariesSpatialIndexIfMissing();
-            return;
+            DB::statement("ALTER TABLE zones MODIFY boundaries POLYGON NOT NULL");
+        } else {
+            DB::statement("UPDATE zones SET boundaries = NULL WHERE boundaries IS NOT NULL");
+            DB::statement("ALTER TABLE zones MODIFY boundaries POLYGON NOT NULL");
         }
 
-        // Existing text/json values cannot be converted directly to geometry safely.
-        DB::statement("UPDATE zones SET boundaries = NULL WHERE boundaries IS NOT NULL");
-        $this->dropBoundariesTextIndexIfExists();
-        DB::statement("ALTER TABLE zones MODIFY boundaries POLYGON NULL");
-        $this->createBoundariesSpatialIndexIfMissing();
+        // 3. Re-apply the high-speed spatial routing index
+        DB::statement("ALTER TABLE zones ADD SPATIAL INDEX zones_boundaries_spatial (boundaries)");
     }
 
     public function down(): void
@@ -53,32 +57,11 @@ return new class extends Migration
             return;
         }
 
-        $this->dropBoundariesSpatialIndexIfExists();
+        $indexes = DB::select("SHOW INDEX FROM zones WHERE Column_name = 'boundaries'");
+        foreach ($indexes as $index) {
+            DB::statement("ALTER TABLE zones DROP INDEX {$index->Key_name}");
+        }
+
         DB::statement("ALTER TABLE zones MODIFY boundaries TEXT NULL");
-        $this->createBoundariesTextIndexIfMissing();
-    }
-
-    private function dropBoundariesTextIndexIfExists(): void
-    {
-        $index = DB::selectOne("SHOW INDEX FROM zones WHERE Column_name = 'boundaries' AND Key_name = 'zones_boundaries_index'");
-        if ($index) {
-            DB::statement('ALTER TABLE zones DROP INDEX zones_boundaries_index');
-        }
-    }
-
-    private function createBoundariesTextIndexIfMissing(): void
-    {
-        $index = DB::selectOne("SHOW INDEX FROM zones WHERE Column_name = 'boundaries' AND Key_name = 'zones_boundaries_index'");
-        if (!$index) {
-            DB::statement('ALTER TABLE zones ADD INDEX zones_boundaries_index (boundaries(191))');
-        }
-    }
-
-    private function createBoundariesSpatialIndexIfMissing(): void
-    {
-        $index = DB::selectOne("SHOW INDEX FROM zones WHERE Column_name = 'boundaries' AND Key_name = 'zones_boundaries_spatial_index'");
-        if (!$index) {
-            DB::statement('ALTER TABLE zones ADD SPATIAL INDEX zones_boundaries_spatial_index (boundaries)');
-        }
     }
 };
