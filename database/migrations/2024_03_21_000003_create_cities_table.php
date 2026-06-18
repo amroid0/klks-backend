@@ -12,11 +12,11 @@ return new class extends Migration
             $table->id();
             $table->string('name',50);
             $table->string('state',50)->nullable();
-            $table->string('country',50)->default('Egypt');
+            $table->string('country',50)->default('India');
             $table->decimal('latitude', 10, 8);
             $table->decimal('longitude', 10, 8);
             $table->boolean('status')->default(true);
-            $table->string('timezone')->default('Africa/Cairo');
+            $table->string('timezone')->default('Asia/Kolkata');
             $table->string('currency')->default('EGP');
             
             // Service Hours
