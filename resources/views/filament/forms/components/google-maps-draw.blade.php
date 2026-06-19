@@ -679,7 +679,7 @@
                     // Create and load the script
                     const script = document.createElement('script');
                     script.src = 'https://maps.googleapis.com/maps/api/js?key=' + apiKey +
-                        '&libraries=places,drawing,geometry&callback=' + callbackName;
+                        '&v=3.64&libraries=places,drawing,geometry&callback=' + callbackName;
                     script.async = true;
                     script.defer = true;
 
