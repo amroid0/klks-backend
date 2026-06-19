@@ -16,12 +16,6 @@ return new class extends Migration
             return;
         }
 
-        // 1. Drop any existing index on 'boundaries' to unlock the column modification
-        $indexes = DB::select("SHOW INDEX FROM zones WHERE Column_name = 'boundaries'");
-        foreach ($indexes as $index) {
-            DB::statement("ALTER TABLE zones DROP INDEX {$index->Key_name}");
-        }
-
         $column = DB::selectOne("
             SELECT COLUMN_TYPE
             FROM information_schema.COLUMNS
@@ -35,16 +29,14 @@ return new class extends Migration
             return;
         }
 
-        // 2. Change column to POLYGON NOT NULL (Spatial indexes require NOT NULL)
         if (str_contains(strtolower((string) $column->COLUMN_TYPE), 'polygon')) {
-            DB::statement("ALTER TABLE zones MODIFY boundaries POLYGON NOT NULL");
-        } else {
-            DB::statement("UPDATE zones SET boundaries = NULL WHERE boundaries IS NOT NULL");
-            DB::statement("ALTER TABLE zones MODIFY boundaries POLYGON NOT NULL");
+            DB::statement("ALTER TABLE zones MODIFY boundaries POLYGON NULL");
+            return;
         }
 
-        // 3. Re-apply the high-speed spatial routing index
-        DB::statement("ALTER TABLE zones ADD SPATIAL INDEX zones_boundaries_spatial (boundaries)");
+        // Existing text/json values cannot be converted directly to geometry safely.
+        DB::statement("UPDATE zones SET boundaries = NULL WHERE boundaries IS NOT NULL");
+        DB::statement("ALTER TABLE zones MODIFY boundaries POLYGON NULL");
     }
 
     public function down(): void
@@ -55,11 +47,6 @@ return new class extends Migration
 
         if (!Schema::hasTable('zones') || !Schema::hasColumn('zones', 'boundaries')) {
             return;
-        }
-
-        $indexes = DB::select("SHOW INDEX FROM zones WHERE Column_name = 'boundaries'");
-        foreach ($indexes as $index) {
-            DB::statement("ALTER TABLE zones DROP INDEX {$index->Key_name}");
         }
 
         DB::statement("ALTER TABLE zones MODIFY boundaries TEXT NULL");

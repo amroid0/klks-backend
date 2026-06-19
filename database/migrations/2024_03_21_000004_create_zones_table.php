@@ -53,7 +53,6 @@ return new class extends Migration
         });
 
         if (DB::getDriverName() === 'mysql') {
-            DB::statement('ALTER TABLE zones ADD INDEX zones_boundaries_index (boundaries(191))');
             DB::statement('ALTER TABLE driver_locations ADD INDEX driver_locations_location_index (location(191))');
         }
     }
