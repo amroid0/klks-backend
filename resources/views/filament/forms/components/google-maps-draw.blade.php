@@ -54,12 +54,19 @@
             </div>
         </div>
 
+        <p class="text-sm text-blue-700" x-show="isDrawingMode">
+            Click on the map to add points (need at least 3). Click "Finish Drawing" when done.
+        </p>
 
         <!-- Drawing Controls -->
         <div class="flex space-x-2 mb-4">
-            <button type="button" @click="startDrawing()"
+            <button type="button" @click="startDrawing()" x-show="!isDrawingMode"
                 class="px-4 py-2 bg-blue-600 text-black rounded-md hover:bg-blue-700 text-sm">
                 Draw Polygon
+            </button>
+            <button type="button" @click="finishDrawing()" x-show="isDrawingMode"
+                class="px-4 py-2 bg-green-600 text-black rounded-md hover:bg-green-700 text-sm">
+                Finish Drawing
             </button>
             <button type="button" @click="clearPolygon()"
                 class="px-4 py-2 bg-red-600 text-black rounded-md hover:bg-red-700 text-sm">
@@ -197,7 +204,6 @@
         function googleMapsDraw() {
             return {
                 map: null,
-                drawingManager: null,
                 selectedShape: null,
                 searchAutocomplete: null,
                 searchMarker: null,
@@ -217,6 +223,13 @@
                 lastBoundariesJson: null, // Remember last applied boundaries JSON
                 livewireHookRegistered: false,
                 lastCityChangeDetail: null, // Remember last city change event
+
+                // --- Custom click-to-draw state (replaces the removed DrawingManager) ---
+                isDrawingMode: false,
+                drawingPoints: [],
+                tempPolygon: null,
+                tempMarkers: [],
+                mapClickListener: null,
 
                 get boundariesJson() {
                     return JSON.stringify(this.coordinates);
@@ -672,14 +685,17 @@
                     window[callbackName] = () => {
                         this.debugLog('Google Maps callback triggered');
                         this.mapsLoaded = true;
-                        this.createMap();
+                            this.createMap();
                         delete window[callbackName];
                     };
 
-                    // Create and load the script
+                    // Create and load the script.
+                    // NOTE: the "drawing" library is no longer requested - DrawingManager was
+                    // removed from the Maps JS API as of v3.65 (Google deprecated it Aug 2025,
+                    // removed it June 2026). We now draw polygons manually via map click events.
                     const script = document.createElement('script');
                     script.src = 'https://maps.googleapis.com/maps/api/js?key=' + apiKey +
-                        '&v=3.64&libraries=places,drawing,geometry&callback=' + callbackName;
+                        '&v=weekly&libraries=places,geometry&callback=' + callbackName;
                     script.async = true;
                     script.defer = true;
 
@@ -751,14 +767,7 @@
                             return;
                         }
 
-                        // Ensure required libraries are loaded
-                        if (typeof google.maps.drawing === 'undefined') {
-                            this.debugLog('Google Maps Drawing library not loaded');
-                            this.updateMapDisplay('Google Maps Drawing library not loaded. Please try again.');
-                            return;
-                        }
-
-                        this.debugLog('Google Maps API and Drawing library loaded successfully');
+                        this.debugLog('Google Maps API loaded successfully');
 
                         // Get the map container
                         const mapElement = document.getElementById('map');
@@ -837,36 +846,16 @@
                         this.map = mapInstance;
                         this.debugLog('Google Maps instance created successfully');
 
-                        // Wait for map to be ready before adding drawing manager
+                        // Wait for map to be ready before wiring up drawing
                         google.maps.event.addListenerOnce(this.map, 'idle', () => {
-                            this.debugLog('Map idle event fired, initializing drawing manager...');
+                            this.debugLog('Map idle event fired, wiring up click-to-draw...');
 
-                            // Initialize drawing manager
-                            this.drawingManager = new google.maps.drawing.DrawingManager({
-                                drawingMode: null,
-                                drawingControl: true,
-                                drawingControlOptions: {
-                                    position: google.maps.ControlPosition.TOP_CENTER,
-                                    drawingModes: [google.maps.drawing.OverlayType.POLYGON]
-                                },
-                                polygonOptions: {
-                                    fillColor: '#FF0000',
-                                    fillOpacity: 0.3,
-                                    strokeWeight: 2,
-                                    strokeColor: '#FF0000',
-                                    clickable: true,
-                                    editable: true,
-                                    zIndex: 1
+                            // Click-to-draw replacement for the removed DrawingManager:
+                            // while isDrawingMode is true, each map click adds a vertex.
+                            this.mapClickListener = google.maps.event.addListener(this.map, 'click', (e) => {
+                                if (this.isDrawingMode) {
+                                    this.addDrawingPoint(e.latLng);
                                 }
-                            });
-
-                            this.drawingManager.setMap(this.map);
-                            this.debugLog('Drawing manager attached to map');
-
-                            // Listen for polygon completion
-                            google.maps.event.addListener(this.drawingManager, 'polygoncomplete', (polygon) => {
-                                this.debugLog('Polygon completed');
-                                this.handlePolygonComplete(polygon);
                             });
 
                             this.mapInitialized = true;
@@ -1008,11 +997,101 @@
                     }
                 },
 
-                handlePolygonComplete(polygon) {
+                // --- Custom click-to-draw implementation (replaces the removed DrawingManager) ---
 
+                startDrawing() {
+                    if (!this.map) {
+                        alert('Please wait for the map to finish loading');
+                        return;
+                    }
+                    // Clear any existing polygon/drawing state before starting a new one
+                    this.clearPolygon();
+                    this.isDrawingMode = true;
+                    this.debugLog('Drawing mode started - click the map to add points');
+                },
+
+                addDrawingPoint(latLng) {
+                    this.drawingPoints.push(latLng);
+                    this.debugLog(`Added drawing point, total: ${this.drawingPoints.length}`);
+
+                    // Visual marker for each vertex placed so far
+                    const marker = new google.maps.Marker({
+                        position: latLng,
+                        map: this.map,
+                        icon: {
+                            path: google.maps.SymbolPath.CIRCLE,
+                            scale: 5,
+                            fillColor: '#FF0000',
+                            fillOpacity: 1,
+                            strokeWeight: 1
+                        }
+                    });
+                    this.tempMarkers.push(marker);
+
+                    // Redraw the in-progress (non-editable) preview polygon
+                    if (this.tempPolygon) {
+                        this.tempPolygon.setMap(null);
+                        this.tempPolygon = null;
+                    }
+                    if (this.drawingPoints.length >= 2) {
+                        this.tempPolygon = new google.maps.Polygon({
+                            paths: this.drawingPoints,
+                            fillColor: '#FF0000',
+                            fillOpacity: 0.3,
+                            strokeWeight: 2,
+                            strokeColor: '#FF0000',
+                            map: this.map,
+                            clickable: false,
+                            editable: false,
+                            draggable: false
+                        });
+                    }
+                },
+
+                finishDrawing() {
+                    if (this.drawingPoints.length < 3) {
+                        alert('Click at least 3 points on the map to create a polygon, then click "Finish Drawing"');
+                        return;
+                    }
+
+                    this.isDrawingMode = false;
+
+                    const coords = this.drawingPoints.map(p => ({
+                        lat: p.lat(),
+                        lng: p.lng()
+                    }));
+
+                    this.clearTempDrawing();
+
+                    // Re-use the existing editable/draggable polygon creation + listener wiring
+                    this.createPolygonFromCoordinates(coords);
+
+                    // createPolygonFromCoordinates doesn't push the new shape to Livewire by
+                    // itself (it's also used for *loading* existing boundaries, where we don't
+                    // want to re-sync). Since this is a brand new user-drawn shape, push it now.
+                    if (this.selectedShape) {
+                        this.updateCoordinatesFromPolygon(this.selectedShape);
+                    }
+
+                    this.debugLog('Finished drawing polygon with ' + coords.length + ' points');
+                },
+
+                clearTempDrawing() {
+                    this.tempMarkers.forEach(m => m.setMap(null));
+                    this.tempMarkers = [];
+                    if (this.tempPolygon) {
+                        this.tempPolygon.setMap(null);
+                        this.tempPolygon = null;
+                    }
+                    this.drawingPoints = [];
+                },
+
+                handlePolygonComplete(polygon) {
+                    // Kept for backward compatibility with any external callers, but the
+                    // DrawingManager that used to invoke this no longer exists. New polygons
+                    // from manual drawing go through finishDrawing() -> createPolygonFromCoordinates().
                     const self = this;
 
-                    // Clear any existing polygon and its listeners
                     if (this.selectedShape) {
                         google.maps.event.clearInstanceListeners(this.selectedShape);
                         if (this.selectedShape.getPath) {
@@ -1022,379 +1101,356 @@
                     }
                     this.selectedShape = polygon;
 
-                    // Reset drawing mode
-                    this.drawingManager.setDrawingMode(null);
-
-                    // Make polygon editable
                     polygon.setEditable(true);
                     polygon.setDraggable(true);
 
-                    // Extract coordinates from the NEW polygon and sync
                     this.updateCoordinatesFromPolygon(polygon);
 
-                // Listen for changes on the path
-                const path = polygon.getPath();
+                    const path = polygon.getPath();
 
-                path.addListener('set_at', function (index) {
+                    path.addListener('set_at', function (index) {
+                        self.updateCoordinatesFromPolygon(polygon);
+                    });
 
-                    self.updateCoordinatesFromPolygon(polygon);
-                });
+                    path.addListener('insert_at', function (index) {
+                        self.updateCoordinatesFromPolygon(polygon);
+                    });
 
-                path.addListener('insert_at', function (index) {
+                    path.addListener('remove_at', function (index) {
+                        self.updateCoordinatesFromPolygon(polygon);
+                    });
 
-                    self.updateCoordinatesFromPolygon(polygon);
-                });
-
-                path.addListener('remove_at', function (index) {
-
-                    self.updateCoordinatesFromPolygon(polygon);
-                });
-
-                // Also listen for polygon drag
-                polygon.addListener('dragend', function () {
-
-                    self.updateCoordinatesFromPolygon(polygon);
-                });
-            },
+                    polygon.addListener('dragend', function () {
+                        self.updateCoordinatesFromPolygon(polygon);
+                    });
+                },
 
                 // Debounce timer for syncing
                 syncDebounceTimer: null,
 
-                    updateCoordinatesFromPolygon(polygon) {
-                const path = polygon.getPath();
-                this.coordinates = [];
+                updateCoordinatesFromPolygon(polygon) {
+                    const path = polygon.getPath();
+                    this.coordinates = [];
 
-                for (let i = 0; i < path.getLength(); i++) {
-                    const point = path.getAt(i);
-                    this.coordinates.push({
-                        lat: point.lat(),
-                        lng: point.lng()
-                    });
-                }
-
-                // Update boundaries data
-                const json = JSON.stringify(this.coordinates);
-                this.debugLog('Coordinates updated: ' + json.substring(0, 100) + '...');
-
-                // Update the hidden input field immediately
-                if (this.$refs.boundariesInput) {
-                    this.$refs.boundariesInput.value = json;
-                    this.$refs.boundariesInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    this.$refs.boundariesInput.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-
-                // Also update any Filament-generated boundaries inputs
-                const boundariesSelectors = [
-                    'input[wire\\:model\\.live="data.boundaries"]',
-                    'input[wire\\:model="data.boundaries"]',
-                    'input[name="data.boundaries"]',
-                    'input[name="data[boundaries]"]'
-                ];
-
-                boundariesSelectors.forEach(selector => {
-                    try {
-                        document.querySelectorAll(selector).forEach(input => {
-                            if (input.value !== json) {
-                                input.value = json;
-                                input.dispatchEvent(new Event('input', { bubbles: true }));
-                                input.dispatchEvent(new Event('change', { bubbles: true }));
-                                this.debugLog('Updated input field: ' + selector);
-                            }
+                    for (let i = 0; i < path.getLength(); i++) {
+                        const point = path.getAt(i);
+                        this.coordinates.push({
+                            lat: point.lat(),
+                            lng: point.lng()
                         });
-                    } catch (e) { }
-                });
-
-                // Debounced sync to Livewire (to avoid too many requests while dragging)
-                this.debouncedSyncToLivewire(json);
-
-
-            },
-
-            // Sync immediately (no debounce - we need the data to be available for save)
-            debouncedSyncToLivewire(json) {
-                // Sync immediately - the save button might be clicked at any time
-                this.syncToLivewire();
-            },
-
-            startDrawing() {
-                if (this.drawingManager) {
-                    this.drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
-                } else {
-                    alert('Please load Google Maps first by clicking "Load Google Maps"');
-                }
-            },
-
-            clearPolygon() {
-                if (this.selectedShape) {
-                    this.selectedShape.setMap(null);
-                    this.selectedShape = null;
-                }
-                this.coordinates = [];
-
-                // Clear the boundaries data via $wire
-                if (this.$wire) {
-                    try {
-                        this.$wire.set('data.boundaries', '');
-                        this.debugLog('Cleared boundaries via $wire');
-                    } catch (e) {
-                        console.warn('Could not clear via $wire:', e);
                     }
-                }
 
-                // Also clear the hidden input
-                const json = JSON.stringify([]);
-                if (this.$refs.boundariesInput) {
-                    this.$refs.boundariesInput.value = json;
-                    this.$refs.boundariesInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    this.$refs.boundariesInput.dispatchEvent(new Event('change', { bubbles: true }));
-                }
+                    // Update boundaries data
+                    const json = JSON.stringify(this.coordinates);
+                    this.debugLog('Coordinates updated: ' + json.substring(0, 100) + '...');
 
-                if (this.drawingManager) {
-                    this.drawingManager.setDrawingMode(null);
-                }
-            },
-
-            removeCoordinate(index) {
-                this.coordinates.splice(index, 1);
-            },
-
-            addManualCoordinate() {
-                const lat = parseFloat(this.manualLat);
-                const lng = parseFloat(this.manualLng);
-
-                if (isNaN(lat) || isNaN(lng)) {
-                    alert('Please enter valid latitude and longitude values');
-                    return;
-                }
-
-                this.coordinates.push({
-                    lat,
-                    lng
-                });
-
-                // Clear inputs
-                this.manualLat = '';
-                this.manualLng = '';
-            },
-
-            addQuickCoordinate(lat, lng, name) {
-                this.coordinates.push({
-                    lat,
-                    lng
-                });
-            },
-
-            getBoundariesData() {
-                // Try multiple ways to get the boundaries data
-                let boundariesData = null;
-
-                // Method 0: Try to get from $wire first
-                if (this.$wire) {
-                    try {
-                        const wireData = this.$wire.get('data.boundaries');
-                        if (wireData && wireData !== '' && wireData !== '[]' && wireData !== 'null') {
-                            try {
-                                const parsed = JSON.parse(wireData);
-                                if (Array.isArray(parsed) && parsed.length >= 3) {
-                                    this.debugLog(`Found boundaries from $wire: ${wireData.substring(0, 100)}...`);
-                                    return wireData;
-                                }
-                            } catch (e) { }
-                        }
-                    } catch (e) {
-                        this.debugLog('Could not get from $wire: ' + e.message);
+                    // Update the hidden input field immediately
+                    if (this.$refs.boundariesInput) {
+                        this.$refs.boundariesInput.value = json;
+                        this.$refs.boundariesInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        this.$refs.boundariesInput.dispatchEvent(new Event('change', { bubbles: true }));
                     }
-                }
 
-                // Method 1: Check Livewire component data (has the form state)
-                // This is where mutateFormDataBeforeFill stores the JSON data
-                if (window.Livewire) {
-                    try {
-                        const wireId = document.querySelector('[wire\\:id]')?.getAttribute('wire:id');
-                        if (wireId) {
-                            const livewireComponent = Livewire.find(wireId);
-                            if (livewireComponent) {
-                                // Try to get from data object (where form state is stored)
-                                const formData = livewireComponent.get('data');
-                                if (formData && formData.boundaries) {
-                                    const data = formData.boundaries;
-                                    // Validate it's not empty or invalid
-                                    if (data && data !== '' && data !== '[]' && data !== 'null' && data !==
-                                        'undefined') {
-                                        boundariesData = typeof data === 'string' ? data : JSON.stringify(data);
-                                        this.debugLog(
-                                            `Found boundaries from Livewire data: ${boundariesData.substring(0, 100)}...`
-                                        );
-                                    }
-                                }
-                                // Also try direct get
-                                if (!boundariesData) {
-                                    const directData = livewireComponent.get('data.boundaries');
-                                    if (directData && directData !== '' && directData !== '[]' && directData !==
-                                        'null' && directData !== 'undefined') {
-                                        boundariesData = typeof directData === 'string' ? directData : JSON.stringify(
-                                            directData);
-                                        this.debugLog(
-                                            `Found boundaries from Livewire get: ${boundariesData.substring(0, 100)}...`
-                                        );
-                                    }
-                                }
-
-                                // Also try to get from the snapshot (initial state)
-                                if (!boundariesData && livewireComponent.get('snapshot')) {
-                                    const snapshot = livewireComponent.get('snapshot');
-                                    if (snapshot?.data?.boundaries) {
-                                        const snapData = snapshot.data.boundaries;
-                                        if (snapData && snapData !== '' && snapData !== '[]' && snapData !== 'null') {
-                                            boundariesData = typeof snapData === 'string' ? snapData : JSON.stringify(
-                                                snapData);
-                                            this.debugLog(
-                                                `Found boundaries from Livewire snapshot: ${boundariesData.substring(0, 100)}...`
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        console.warn('Error checking Livewire component:', e);
-                    }
-                }
-
-                // Method 2: Check Filament's generated hidden input fields (fallback)
-                // Only check if Livewire didn't have it, and validate values properly
-                if (!boundariesData) {
+                    // Also update any Filament-generated boundaries inputs
                     const boundariesSelectors = [
+                        'input[wire\\:model\\.live="data.boundaries"]',
+                        'input[wire\\:model="data.boundaries"]',
                         'input[name="data.boundaries"]',
-                        'input[name="data[boundaries]"]',
-                        'input[wire\\:model*="boundaries"]',
-                        'input[name*="boundaries"][type="hidden"]',
-                        'input[id*="boundaries"]',
-                        'input[name="boundaries"]'
+                        'input[name="data[boundaries]"]'
                     ];
 
-                    for (const selector of boundariesSelectors) {
+                    boundariesSelectors.forEach(selector => {
                         try {
-                            const input = document.querySelector(selector);
-                            if (input && input.value) {
-                                const value = input.value.trim();
-                                // Validate it's a valid non-empty JSON array
-                                if (value && value !== '' && value !== '[]' && value !== 'null' && value !==
-                                    'undefined') {
-                                    // Try to parse to validate it's valid JSON
-                                    try {
-                                        const parsed = JSON.parse(value);
-                                        if (Array.isArray(parsed) && parsed.length >= 3) {
-                                            boundariesData = value;
+                            document.querySelectorAll(selector).forEach(input => {
+                                if (input.value !== json) {
+                                    input.value = json;
+                                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                                    this.debugLog('Updated input field: ' + selector);
+                                }
+                            });
+                        } catch (e) { }
+                    });
+
+                    // Debounced sync to Livewire (to avoid too many requests while dragging)
+                    this.debouncedSyncToLivewire(json);
+                },
+
+                // Sync immediately (no debounce - we need the data to be available for save)
+                debouncedSyncToLivewire(json) {
+                    // Sync immediately - the save button might be clicked at any time
+                    this.syncToLivewire();
+                },
+
+                clearPolygon() {
+                    this.isDrawingMode = false;
+                    this.clearTempDrawing();
+
+                    if (this.selectedShape) {
+                        this.selectedShape.setMap(null);
+                        this.selectedShape = null;
+                    }
+                    this.coordinates = [];
+
+                    // Clear the boundaries data via $wire
+                    if (this.$wire) {
+                        try {
+                            this.$wire.set('data.boundaries', '');
+                            this.debugLog('Cleared boundaries via $wire');
+                        } catch (e) {
+                            console.warn('Could not clear via $wire:', e);
+                        }
+                    }
+
+                    // Also clear the hidden input
+                    const json = JSON.stringify([]);
+                    if (this.$refs.boundariesInput) {
+                        this.$refs.boundariesInput.value = json;
+                        this.$refs.boundariesInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        this.$refs.boundariesInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                },
+
+                removeCoordinate(index) {
+                    this.coordinates.splice(index, 1);
+                },
+
+                addManualCoordinate() {
+                    const lat = parseFloat(this.manualLat);
+                    const lng = parseFloat(this.manualLng);
+
+                    if (isNaN(lat) || isNaN(lng)) {
+                        alert('Please enter valid latitude and longitude values');
+                        return;
+                    }
+
+                    this.coordinates.push({
+                        lat,
+                        lng
+                    });
+
+                    // Clear inputs
+                    this.manualLat = '';
+                    this.manualLng = '';
+                },
+
+                addQuickCoordinate(lat, lng, name) {
+                    this.coordinates.push({
+                        lat,
+                        lng
+                    });
+                },
+
+                getBoundariesData() {
+                    // Try multiple ways to get the boundaries data
+                    let boundariesData = null;
+
+                    // Method 0: Try to get from $wire first
+                    if (this.$wire) {
+                        try {
+                            const wireData = this.$wire.get('data.boundaries');
+                            if (wireData && wireData !== '' && wireData !== '[]' && wireData !== 'null') {
+                                try {
+                                    const parsed = JSON.parse(wireData);
+                                    if (Array.isArray(parsed) && parsed.length >= 3) {
+                                        this.debugLog(`Found boundaries from $wire: ${wireData.substring(0, 100)}...`);
+                                        return wireData;
+                                    }
+                                } catch (e) { }
+                            }
+                        } catch (e) {
+                            this.debugLog('Could not get from $wire: ' + e.message);
+                        }
+                    }
+
+                    // Method 1: Check Livewire component data (has the form state)
+                    // This is where mutateFormDataBeforeFill stores the JSON data
+                    if (window.Livewire) {
+                        try {
+                            const wireId = document.querySelector('[wire\\:id]')?.getAttribute('wire:id');
+                            if (wireId) {
+                                const livewireComponent = Livewire.find(wireId);
+                                if (livewireComponent) {
+                                    // Try to get from data object (where form state is stored)
+                                    const formData = livewireComponent.get('data');
+                                    if (formData && formData.boundaries) {
+                                        const data = formData.boundaries;
+                                        // Validate it's not empty or invalid
+                                        if (data && data !== '' && data !== '[]' && data !== 'null' && data !==
+                                            'undefined') {
+                                            boundariesData = typeof data === 'string' ? data : JSON.stringify(data);
                                             this.debugLog(
-                                                `Found boundaries data from input: ${selector} (${parsed.length} coordinates)`
+                                                `Found boundaries from Livewire data: ${boundariesData.substring(0, 100)}...`
                                             );
-                                            break;
                                         }
-                                    } catch (e) {
-                                        // Not valid JSON, skip
+                                    }
+                                    // Also try direct get
+                                    if (!boundariesData) {
+                                        const directData = livewireComponent.get('data.boundaries');
+                                        if (directData && directData !== '' && directData !== '[]' && directData !==
+                                            'null' && directData !== 'undefined') {
+                                            boundariesData = typeof directData === 'string' ? directData : JSON.stringify(
+                                                directData);
+                                            this.debugLog(
+                                                `Found boundaries from Livewire get: ${boundariesData.substring(0, 100)}...`
+                                            );
+                                        }
+                                    }
+
+                                    // Also try to get from the snapshot (initial state)
+                                    if (!boundariesData && livewireComponent.get('snapshot')) {
+                                        const snapshot = livewireComponent.get('snapshot');
+                                        if (snapshot?.data?.boundaries) {
+                                            const snapData = snapshot.data.boundaries;
+                                            if (snapData && snapData !== '' && snapData !== '[]' && snapData !== 'null') {
+                                                boundariesData = typeof snapData === 'string' ? snapData : JSON.stringify(
+                                                    snapData);
+                                                this.debugLog(
+                                                    `Found boundaries from Livewire snapshot: ${boundariesData.substring(0, 100)}...`
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
                         } catch (e) {
-                            console.warn('Error with selector:', selector, e);
+                            console.warn('Error checking Livewire component:', e);
                         }
                     }
-                }
 
-                // Method 3: Check for data attributes on the form
-                if (!boundariesData) {
-                    const form = document.querySelector('form');
-                    if (form && form.dataset.boundaries) {
-                        boundariesData = form.dataset.boundaries;
+                    // Method 2: Check Filament's generated hidden input fields (fallback)
+                    // Only check if Livewire didn't have it, and validate values properly
+                    if (!boundariesData) {
+                        const boundariesSelectors = [
+                            'input[name="data.boundaries"]',
+                            'input[name="data[boundaries]"]',
+                            'input[wire\\:model*="boundaries"]',
+                            'input[name*="boundaries"][type="hidden"]',
+                            'input[id*="boundaries"]',
+                            'input[name="boundaries"]'
+                        ];
+
+                        for (const selector of boundariesSelectors) {
+                            try {
+                                const input = document.querySelector(selector);
+                                if (input && input.value) {
+                                    const value = input.value.trim();
+                                    // Validate it's a valid non-empty JSON array
+                                    if (value && value !== '' && value !== '[]' && value !== 'null' && value !==
+                                        'undefined') {
+                                        // Try to parse to validate it's valid JSON
+                                        try {
+                                            const parsed = JSON.parse(value);
+                                            if (Array.isArray(parsed) && parsed.length >= 3) {
+                                                boundariesData = value;
+                                                this.debugLog(
+                                                    `Found boundaries data from input: ${selector} (${parsed.length} coordinates)`
+                                                );
+                                                break;
+                                            }
+                                        } catch (e) {
+                                            // Not valid JSON, skip
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('Error with selector:', selector, e);
+                            }
+                        }
+                    }
+
+                    // Method 3: Check for data attributes on the form
+                    if (!boundariesData) {
+                        const form = document.querySelector('form');
+                        if (form && form.dataset.boundaries) {
+                            boundariesData = form.dataset.boundaries;
+
+                        }
+                    }
+
+                    return boundariesData;
+                },
+
+                loadExistingBoundaries() {
+                    // Use the helper function to get boundaries data
+                    const boundariesData = this.getBoundariesData();
+
+
+                    if (boundariesData) {
+                        if (this.applyBoundariesJson(boundariesData, 'loadExistingBoundaries')) {
+                            return;
+                        }
+                    } else {
 
                     }
-                }
+                },
 
-                return boundariesData;
-            },
+                createPolygonFromCoordinates(coords) {
+                    if (!this.map) return;
 
-            loadExistingBoundaries() {
-                // Use the helper function to get boundaries data
-                const boundariesData = this.getBoundariesData();
-
-
-                if (boundariesData) {
-                    if (this.applyBoundariesJson(boundariesData, 'loadExistingBoundaries')) {
-                        return;
+                    if (this.selectedShape) {
+                        // Clear old listeners
+                        google.maps.event.clearInstanceListeners(this.selectedShape);
+                        if (this.selectedShape.getPath) {
+                            google.maps.event.clearInstanceListeners(this.selectedShape.getPath());
+                        }
+                        this.selectedShape.setMap(null);
+                        this.selectedShape = null;
                     }
-                } else {
 
-                }
-            },
+                    this.coordinates = coords;
+                    const self = this; // Capture reference for callbacks
 
-            createPolygonFromCoordinates(coords) {
-                if (!this.map) return;
+                    const polygon = new google.maps.Polygon({
+                        paths: coords,
+                        fillColor: '#FF0000',
+                        fillOpacity: 0.3,
+                        strokeWeight: 2,
+                        strokeColor: '#FF0000',
+                        map: this.map,
+                        editable: true,
+                        draggable: true
+                    });
 
-                if (this.selectedShape) {
-                    // Clear old listeners
-                    google.maps.event.clearInstanceListeners(this.selectedShape);
-                    if (this.selectedShape.getPath) {
-                        google.maps.event.clearInstanceListeners(this.selectedShape.getPath());
-                    }
-                    this.selectedShape.setMap(null);
-                    this.selectedShape = null;
-                }
+                    this.selectedShape = polygon;
 
-                this.coordinates = coords;
-                const self = this; // Capture reference for callbacks
+                    // Fit map to polygon
+                    const bounds = new google.maps.LatLngBounds();
+                    coords.forEach(coord => {
+                        bounds.extend(new google.maps.LatLng(coord.lat, coord.lng));
+                    });
+                    this.map.fitBounds(bounds);
 
-                const polygon = new google.maps.Polygon({
-                    paths: coords,
-                    fillColor: '#FF0000',
-                    fillOpacity: 0.3,
-                    strokeWeight: 2,
-                    strokeColor: '#FF0000',
-                    map: this.map,
-                    editable: true,
-                    draggable: true
-                });
+                    // Listen for changes on the PATH - this handles vertex edits
+                    const path = polygon.getPath();
 
-                this.selectedShape = polygon;
+                    path.addListener('set_at', function (index) {
 
-                // Fit map to polygon
-                const bounds = new google.maps.LatLngBounds();
-                coords.forEach(coord => {
-                    bounds.extend(new google.maps.LatLng(coord.lat, coord.lng));
-                });
-                this.map.fitBounds(bounds);
+                        self.updateCoordinatesFromPolygon(polygon);
+                    });
 
-                // Listen for changes on the PATH - this handles vertex edits
-                const path = polygon.getPath();
+                    path.addListener('insert_at', function (index) {
 
-                path.addListener('set_at', function (index) {
+                        self.updateCoordinatesFromPolygon(polygon);
+                    });
 
-                    self.updateCoordinatesFromPolygon(polygon);
-                });
+                    path.addListener('remove_at', function (index) {
 
-                path.addListener('insert_at', function (index) {
+                        self.updateCoordinatesFromPolygon(polygon);
+                    });
 
-                    self.updateCoordinatesFromPolygon(polygon);
-                });
+                    // Also listen for polygon drag end (when dragging the whole polygon)
+                    polygon.addListener('dragend', function () {
 
-                path.addListener('remove_at', function (index) {
+                        self.updateCoordinatesFromPolygon(polygon);
+                    });
 
-                    self.updateCoordinatesFromPolygon(polygon);
-                });
+                },
 
-                // Also listen for polygon drag end (when dragging the whole polygon)
-                polygon.addListener('dragend', function () {
-
-                    self.updateCoordinatesFromPolygon(polygon);
-                });
-
-
-            },
-
-            updateMapDisplay(message) {
-                const mapElement = document.getElementById('map');
-                if (mapElement) {
-                    mapElement.innerHTML = `
+                updateMapDisplay(message) {
+                    const mapElement = document.getElementById('map');
+                    if (mapElement) {
+                        mapElement.innerHTML = `
                                 <div class="w-full h-full flex items-center justify-center">
                                     <div class="text-center">
                                         <div class="text-4xl mb-2">🗺️</div>
@@ -1403,368 +1459,368 @@
                                     </div>
                                 </div>
                             `;
-                }
-            },
+                    }
+                },
 
-            testApiKey() {
-                if (typeof google !== 'undefined' && typeof google.maps !== 'undefined') {
-                    alert('Google Maps API is loaded. API Key: {{ config('services.google_maps.api_key') }}');
-                } else {
-                    alert('Google Maps API is NOT loaded. Please ensure the API key is correct and not blocked.');
-                }
-            },
+                testApiKey() {
+                    if (typeof google !== 'undefined' && typeof google.maps !== 'undefined') {
+                        alert('Google Maps API is loaded. API Key: {{ config('services.google_maps.api_key') }}');
+                    } else {
+                        alert('Google Maps API is NOT loaded. Please ensure the API key is correct and not blocked.');
+                    }
+                },
 
-            initSearchAutocomplete() {
-                try {
-                    const input = this.$refs.searchInput;
-                    if (!input || !this.map || !google.maps.places) return;
-                    this.searchAutocomplete = new google.maps.places.Autocomplete(input, {
-                        fields: ['geometry', 'name'],
-                        types: ['geocode']
-                    });
+                initSearchAutocomplete() {
+                    try {
+                        const input = this.$refs.searchInput;
+                        if (!input || !this.map || !google.maps.places) return;
+                        this.searchAutocomplete = new google.maps.places.Autocomplete(input, {
+                            fields: ['geometry', 'name'],
+                            types: ['geocode']
+                        });
 
-                    this.searchAutocomplete.addListener('place_changed', () => {
-                        const place = this.searchAutocomplete.getPlace();
-                        if (!place || !place.geometry) return;
+                        this.searchAutocomplete.addListener('place_changed', () => {
+                            const place = this.searchAutocomplete.getPlace();
+                            if (!place || !place.geometry) return;
 
-                        // Clear previous marker
-                        if (this.searchMarker) {
-                            this.searchMarker.setMap(null);
-                            this.searchMarker = null;
+                            // Clear previous marker
+                            if (this.searchMarker) {
+                                this.searchMarker.setMap(null);
+                                this.searchMarker = null;
+                            }
+
+                            if (place.geometry.viewport) {
+                                this.map.fitBounds(place.geometry.viewport);
+                            } else if (place.geometry.location) {
+                                this.map.setCenter(place.geometry.location);
+                                this.map.setZoom(14);
+                            }
+
+                            // Add a marker to indicate searched spot
+                            if (place.geometry.location) {
+                                this.searchMarker = new google.maps.Marker({
+                                    position: place.geometry.location,
+                                    map: this.map
+                                });
+                            }
+                        });
+
+                        // Bias results around current viewport
+                        this.map.addListener('bounds_changed', () => {
+                            if (this.searchAutocomplete) {
+                                this.searchAutocomplete.setBounds(this.map.getBounds());
+                            }
+                        });
+                    } catch (e) {
+                        console.warn('initSearchAutocomplete error', e);
+                    }
+                },
+
+                tryCenterFromSelectedCityLabel() {
+                    try {
+                        if (!this.map || typeof google === 'undefined' || !google.maps) return;
+
+                        // Filament native select; get selected option text
+                        const select = document.querySelector('select[name="data.city_id"]') || document.querySelector(
+                            'select[id$="city_id"]');
+                        const label = select ? (select.options[select.selectedIndex]?.text || '').trim() : '';
+                        if (!label) return;
+
+                        this.debugLog(`Attempting geocode for selected city label: ${label}`);
+                        const geocoder = new google.maps.Geocoder();
+                        geocoder.geocode({
+                            address: label
+                        }, (results, status) => {
+                            if (status === 'OK' && results && results[0]) {
+                                const loc = results[0].geometry.location;
+                                this.map.setCenter(loc);
+                                this.map.setZoom(12);
+                            } else {
+                                this.debugLog(`Geocoder failed: ${status}`);
+                            }
+                        });
+                    } catch (e) {
+                        console.warn('tryCenterFromSelectedCityLabel error', e);
+                    }
+                },
+
+                tryDisplayCurrentZone(force = false) {
+                    try {
+                        if (!this.map) {
+                            return;
                         }
 
-                        if (place.geometry.viewport) {
-                            this.map.fitBounds(place.geometry.viewport);
-                        } else if (place.geometry.location) {
-                            this.map.setCenter(place.geometry.location);
-                            this.map.setZoom(14);
+                        if (!this.currentZone || !Array.isArray(this.currentZone.coordinates)) {
+                            return;
                         }
 
-                        // Add a marker to indicate searched spot
-                        if (place.geometry.location) {
-                            this.searchMarker = new google.maps.Marker({
-                                position: place.geometry.location,
-                                map: this.map
+                        const coords = this.currentZone.coordinates;
+                        if (!coords || coords.length < 3) {
+                            return;
+                        }
+
+                        const newCoordsJson = JSON.stringify(coords);
+                        const currentCoordsJson = JSON.stringify(this.coordinates || []);
+
+                        if (
+                            !force &&
+                            this.coordinates &&
+                            this.coordinates.length >= 3 &&
+                            newCoordsJson === currentCoordsJson
+                        ) {
+                            return;
+                        }
+
+                        this.createPolygonFromCoordinates(coords);
+                    } catch (e) {
+                        console.warn('tryDisplayCurrentZone error', e);
+                    }
+                },
+
+                applyStoredCityChange() {
+                    try {
+                        if (!this.lastCityChangeDetail || !this.map) {
+                            return;
+                        }
+
+                        this.debugLog('Re-applying stored city change after map ready');
+                        const detail = this.lastCityChangeDetail;
+                        const lat = parseFloat(detail.lat);
+                        const lng = parseFloat(detail.lng);
+                        const zones = detail.zones || [];
+                        const hasLatLng = !isNaN(lat) && !isNaN(lng);
+
+                        if (zones.length) {
+                            this.existingZones = zones;
+                            this.displayExistingZones();
+                        }
+
+                        if (hasLatLng) {
+                            this.map.setCenter({
+                                lat,
+                                lng
                             });
-                        }
-                    });
-
-                    // Bias results around current viewport
-                    this.map.addListener('bounds_changed', () => {
-                        if (this.searchAutocomplete) {
-                            this.searchAutocomplete.setBounds(this.map.getBounds());
-                        }
-                    });
-                } catch (e) {
-                    console.warn('initSearchAutocomplete error', e);
-                }
-            },
-
-            tryCenterFromSelectedCityLabel() {
-                try {
-                    if (!this.map || typeof google === 'undefined' || !google.maps) return;
-
-                    // Filament native select; get selected option text
-                    const select = document.querySelector('select[name="data.city_id"]') || document.querySelector(
-                        'select[id$="city_id"]');
-                    const label = select ? (select.options[select.selectedIndex]?.text || '').trim() : '';
-                    if (!label) return;
-
-                    this.debugLog(`Attempting geocode for selected city label: ${label}`);
-                    const geocoder = new google.maps.Geocoder();
-                    geocoder.geocode({
-                        address: label
-                    }, (results, status) => {
-                        if (status === 'OK' && results && results[0]) {
-                            const loc = results[0].geometry.location;
-                            this.map.setCenter(loc);
                             this.map.setZoom(12);
-                        } else {
-                            this.debugLog(`Geocoder failed: ${status}`);
                         }
-                    });
-                } catch (e) {
-                    console.warn('tryCenterFromSelectedCityLabel error', e);
-                }
-            },
 
-            tryDisplayCurrentZone(force = false) {
-                try {
-                    if (!this.map) {
-                        return;
+                        if (this.currentZone) {
+                            this.tryDisplayCurrentZone(true);
+                        }
+                    } catch (e) {
+                        console.warn('applyStoredCityChange error', e);
                     }
+                },
 
-                    if (!this.currentZone || !Array.isArray(this.currentZone.coordinates)) {
-                        return;
-                    }
-
-                    const coords = this.currentZone.coordinates;
-                    if (!coords || coords.length < 3) {
-                        return;
-                    }
-
-                    const newCoordsJson = JSON.stringify(coords);
-                    const currentCoordsJson = JSON.stringify(this.coordinates || []);
-
-                    if (
-                        !force &&
-                        this.coordinates &&
-                        this.coordinates.length >= 3 &&
-                        newCoordsJson === currentCoordsJson
-                    ) {
-                        return;
-                    }
-
-                    this.createPolygonFromCoordinates(coords);
-                } catch (e) {
-                    console.warn('tryDisplayCurrentZone error', e);
-                }
-            },
-
-            applyStoredCityChange() {
-                try {
-                    if (!this.lastCityChangeDetail || !this.map) {
-                        return;
-                    }
-
-                    this.debugLog('Re-applying stored city change after map ready');
-                    const detail = this.lastCityChangeDetail;
-                    const lat = parseFloat(detail.lat);
-                    const lng = parseFloat(detail.lng);
-                    const zones = detail.zones || [];
-                    const hasLatLng = !isNaN(lat) && !isNaN(lng);
-
-                    if (zones.length) {
-                        this.existingZones = zones;
-                        this.displayExistingZones();
-                    }
-
-                    if (hasLatLng) {
-                        this.map.setCenter({
-                            lat,
-                            lng
+                registerLivewireHooks() {
+                    const attachHook = () => {
+                        if (this.livewireHookRegistered || !window.Livewire || typeof window.Livewire.hook !==
+                            'function') {
+                            return;
+                        }
+                        this.livewireHookRegistered = true;
+                        window.Livewire.hook('commit', ({ component, commit, respond, succeed, fail }) => {
+                            succeed(({ snapshot, effect }) => {
+                                this.handleLivewireProcessed();
+                            });
                         });
-                        this.map.setZoom(12);
-                    }
+                        this.debugLog('Registered Livewire commit hook');
+                    };
 
-                    if (this.currentZone) {
-                        this.tryDisplayCurrentZone(true);
-                    }
-                } catch (e) {
-                    console.warn('applyStoredCityChange error', e);
-                }
-            },
-
-            registerLivewireHooks() {
-                const attachHook = () => {
-                    if (this.livewireHookRegistered || !window.Livewire || typeof window.Livewire.hook !==
-                        'function') {
-                        return;
-                    }
-                    this.livewireHookRegistered = true;
-                    window.Livewire.hook('commit', ({ component, commit, respond, succeed, fail }) => {
-                        succeed(({ snapshot, effect }) => {
-                            this.handleLivewireProcessed();
-                        });
-                    });
-                    this.debugLog('Registered Livewire commit hook');
-                };
-
-                if (window.Livewire && typeof window.Livewire.hook === 'function') {
-                    attachHook();
-                } else {
-                    document.addEventListener('livewire:initialized', () => {
+                    if (window.Livewire && typeof window.Livewire.hook === 'function') {
                         attachHook();
-                    }, {
-                        once: true
-                    });
-                }
-            },
-
-            handleLivewireProcessed() {
-                try {
-                    const boundariesJson = this.getBoundariesData();
-                    if (this.isValidBoundariesJson(boundariesJson) && boundariesJson !== this.lastBoundariesJson) {
-                        this.debugLog('Livewire processed update with new boundaries');
-                        this.applyBoundariesJson(boundariesJson, 'livewire');
+                    } else {
+                        document.addEventListener('livewire:initialized', () => {
+                            attachHook();
+                        }, {
+                            once: true
+                        });
                     }
-                } catch (e) {
-                    console.warn('handleLivewireProcessed error', e);
-                }
-            },
+                },
 
-            isValidBoundariesJson(data) {
-                if (!data || typeof data !== 'string') {
-                    return false;
-                }
-                const trimmed = data.trim();
-                if (!trimmed || trimmed === '[]' || trimmed === 'null' || trimmed === 'undefined') {
-                    return false;
-                }
-                try {
-                    const parsed = JSON.parse(trimmed);
-                    return Array.isArray(parsed) && parsed.length >= 3;
-                } catch (e) {
-                    return false;
-                }
-            },
+                handleLivewireProcessed() {
+                    try {
+                        const boundariesJson = this.getBoundariesData();
+                        if (this.isValidBoundariesJson(boundariesJson) && boundariesJson !== this.lastBoundariesJson) {
+                            this.debugLog('Livewire processed update with new boundaries');
+                            this.applyBoundariesJson(boundariesJson, 'livewire');
+                        }
+                    } catch (e) {
+                        console.warn('handleLivewireProcessed error', e);
+                    }
+                },
 
-            applyBoundariesJson(json, source = 'unknown') {
-                try {
-                    const coords = JSON.parse(json);
-                    if (!Array.isArray(coords) || coords.length < 3) {
+                isValidBoundariesJson(data) {
+                    if (!data || typeof data !== 'string') {
                         return false;
                     }
-
-                    this.lastBoundariesJson = json;
-                    this.currentZone = this.currentZone || {
-                        id: null,
-                        name: 'Current Zone',
-                        coordinates: coords
-                    };
-                    this.currentZone.coordinates = coords;
-
-                    this.debugLog(`Applying ${coords.length} boundary points from ${source}`);
-
-                    if (this.map) {
-                        this.createPolygonFromCoordinates(coords);
+                    const trimmed = data.trim();
+                    if (!trimmed || trimmed === '[]' || trimmed === 'null' || trimmed === 'undefined') {
+                        return false;
                     }
-
-                    return true;
-                } catch (e) {
-                    console.warn('applyBoundariesJson error', e);
-                    return false;
-                }
-            },
-
-            displayExistingZones() {
-                try {
-                    if (!this.map || typeof google === 'undefined' || !google.maps) {
-                        this.debugLog('Map not ready for displaying existing zones');
-                        return;
+                    try {
+                        const parsed = JSON.parse(trimmed);
+                        return Array.isArray(parsed) && parsed.length >= 3;
+                    } catch (e) {
+                        return false;
                     }
+                },
 
-                    // Clear any existing zone polygons
-                    this.clearExistingZones();
+                applyBoundariesJson(json, source = 'unknown') {
+                    try {
+                        const coords = JSON.parse(json);
+                        if (!Array.isArray(coords) || coords.length < 3) {
+                            return false;
+                        }
 
-                    if (!this.existingZones || this.existingZones.length === 0) {
-                        this.debugLog('No existing zones to display');
-                        return;
+                        this.lastBoundariesJson = json;
+                        this.currentZone = this.currentZone || {
+                            id: null,
+                            name: 'Current Zone',
+                            coordinates: coords
+                        };
+                        this.currentZone.coordinates = coords;
+
+                        this.debugLog(`Applying ${coords.length} boundary points from ${source}`);
+
+                        if (this.map) {
+                            this.createPolygonFromCoordinates(coords);
+                        }
+
+                        return true;
+                    } catch (e) {
+                        console.warn('applyBoundariesJson error', e);
+                        return false;
                     }
+                },
 
-                    const activeZoneId = this.currentZone?.id;
-                    this.debugLog(`Displaying ${this.existingZones.length} existing zones`);
-
-                    // Display each zone as a red polygon
-                    this.existingZones.forEach((zone, index) => {
-                        if (activeZoneId && zone.id === activeZoneId) {
+                displayExistingZones() {
+                    try {
+                        if (!this.map || typeof google === 'undefined' || !google.maps) {
+                            this.debugLog('Map not ready for displaying existing zones');
                             return;
                         }
 
-                        if (!zone.coordinates || zone.coordinates.length < 3) {
-                            this.debugLog(`Zone ${zone.id} (${zone.name}) has invalid coordinates`);
+                        // Clear any existing zone polygons
+                        this.clearExistingZones();
+
+                        if (!this.existingZones || this.existingZones.length === 0) {
+                            this.debugLog('No existing zones to display');
                             return;
                         }
 
-                        try {
-                            // Convert coordinates to Google Maps LatLng format
-                            const path = zone.coordinates.map(coord =>
-                                new google.maps.LatLng(coord.lat, coord.lng)
-                            );
+                        const activeZoneId = this.currentZone?.id;
+                        this.debugLog(`Displaying ${this.existingZones.length} existing zones`);
 
-                            // Create a red polygon for existing zone
-                            const polygon = new google.maps.Polygon({
-                                paths: path,
-                                fillColor: '#FF0000', // Red fill
-                                fillOpacity: 0.2, // Semi-transparent
-                                strokeColor: '#FF0000', // Red stroke
-                                strokeWeight: 3, // Thicker stroke to make it stand out
-                                strokeOpacity: 0.8,
-                                map: this.map,
-                                editable: false, // Don't allow editing existing zones
-                                draggable: false, // Don't allow dragging existing zones
-                                zIndex: 0 // Behind new drawings
-                            });
+                        // Display each zone as a red polygon
+                        this.existingZones.forEach((zone, index) => {
+                            if (activeZoneId && zone.id === activeZoneId) {
+                                return;
+                            }
 
-                            // Create an info window with zone name
-                            const infoWindow = new google.maps.InfoWindow({
-                                content: `<div style="padding: 5px;"><strong>${zone.name || 'Zone ' + zone.id}</strong><br/>Existing Zone</div>`
-                            });
+                            if (!zone.coordinates || zone.coordinates.length < 3) {
+                                this.debugLog(`Zone ${zone.id} (${zone.name}) has invalid coordinates`);
+                                return;
+                            }
 
-                            // Show info window on click
-                            polygon.addListener('click', () => {
-                                // Close all other info windows first
-                                this.existingZonePolygons.forEach(existing => {
-                                    if (existing.infoWindow) {
-                                        existing.infoWindow.close();
-                                    }
+                            try {
+                                // Convert coordinates to Google Maps LatLng format
+                                const path = zone.coordinates.map(coord =>
+                                    new google.maps.LatLng(coord.lat, coord.lng)
+                                );
+
+                                // Create a red polygon for existing zone
+                                const polygon = new google.maps.Polygon({
+                                    paths: path,
+                                    fillColor: '#FF0000', // Red fill
+                                    fillOpacity: 0.2, // Semi-transparent
+                                    strokeColor: '#FF0000', // Red stroke
+                                    strokeWeight: 3, // Thicker stroke to make it stand out
+                                    strokeOpacity: 0.8,
+                                    map: this.map,
+                                    editable: false, // Don't allow editing existing zones
+                                    draggable: false, // Don't allow dragging existing zones
+                                    zIndex: 0 // Behind new drawings
                                 });
-                                infoWindow.open(this.map, polygon);
-                            });
 
-                            // Store the polygon and info window
-                            this.existingZonePolygons.push({
-                                polygon: polygon,
-                                infoWindow: infoWindow,
-                                zoneId: zone.id,
-                                zoneName: zone.name
-                            });
+                                // Create an info window with zone name
+                                const infoWindow = new google.maps.InfoWindow({
+                                    content: `<div style="padding: 5px;"><strong>${zone.name || 'Zone ' + zone.id}</strong><br/>Existing Zone</div>`
+                                });
 
-                            this.debugLog(`Displayed zone: ${zone.name} (ID: ${zone.id})`);
-                        } catch (e) {
-                            console.error(`Error displaying zone ${zone.id}:`, e);
-                        }
-                    });
+                                // Show info window on click
+                                polygon.addListener('click', () => {
+                                    // Close all other info windows first
+                                    this.existingZonePolygons.forEach(existing => {
+                                        if (existing.infoWindow) {
+                                            existing.infoWindow.close();
+                                        }
+                                    });
+                                    infoWindow.open(this.map, polygon);
+                                });
 
-                    // Fit map bounds to show all existing zones if any
-                    if (this.existingZonePolygons.length > 0) {
-                        const bounds = new google.maps.LatLngBounds();
-                        this.existingZonePolygons.forEach(item => {
-                            const path = item.polygon.getPath();
-                            path.forEach(point => {
-                                bounds.extend(point);
-                            });
+                                // Store the polygon and info window
+                                this.existingZonePolygons.push({
+                                    polygon: polygon,
+                                    infoWindow: infoWindow,
+                                    zoneId: zone.id,
+                                    zoneName: zone.name
+                                });
+
+                                this.debugLog(`Displayed zone: ${zone.name} (ID: ${zone.id})`);
+                            } catch (e) {
+                                console.error(`Error displaying zone ${zone.id}:`, e);
+                            }
                         });
 
-                        // Only adjust bounds if we have zones, but keep zoom level reasonable
-                        if (bounds.isEmpty()) {
-                            this.debugLog('Bounds empty, skipping fitBounds');
-                        } else {
-                            this.map.fitBounds(bounds);
-                            // Ensure zoom level is not too close
-                            google.maps.event.addListenerOnce(this.map, 'bounds_changed', () => {
-                                if (this.map.getZoom() > 15) {
-                                    this.map.setZoom(15);
-                                }
+                        // Fit map bounds to show all existing zones if any
+                        if (this.existingZonePolygons.length > 0) {
+                            const bounds = new google.maps.LatLngBounds();
+                            this.existingZonePolygons.forEach(item => {
+                                const path = item.polygon.getPath();
+                                path.forEach(point => {
+                                    bounds.extend(point);
+                                });
                             });
+
+                            // Only adjust bounds if we have zones, but keep zoom level reasonable
+                            if (bounds.isEmpty()) {
+                                this.debugLog('Bounds empty, skipping fitBounds');
+                            } else {
+                                this.map.fitBounds(bounds);
+                                // Ensure zoom level is not too close
+                                google.maps.event.addListenerOnce(this.map, 'bounds_changed', () => {
+                                    if (this.map.getZoom() > 15) {
+                                        this.map.setZoom(15);
+                                    }
+                                });
+                            }
                         }
+                    } catch (e) {
+                        console.error('Error displaying existing zones:', e);
                     }
-                } catch (e) {
-                    console.error('Error displaying existing zones:', e);
-                }
-            },
+                },
 
-            clearExistingZones() {
-                try {
-                    // Remove all existing zone polygons from the map
-                    this.existingZonePolygons.forEach(item => {
-                        if (item.polygon) {
-                            item.polygon.setMap(null);
-                        }
-                        if (item.infoWindow) {
-                            item.infoWindow.close();
-                        }
-                    });
+                clearExistingZones() {
+                    try {
+                        // Remove all existing zone polygons from the map
+                        this.existingZonePolygons.forEach(item => {
+                            if (item.polygon) {
+                                item.polygon.setMap(null);
+                            }
+                            if (item.infoWindow) {
+                                item.infoWindow.close();
+                            }
+                        });
 
-                    // Clear the array
-                    this.existingZonePolygons = [];
-                    this.debugLog('Cleared existing zones');
-                } catch (e) {
-                    console.error('Error clearing existing zones:', e);
+                        // Clear the array
+                        this.existingZonePolygons = [];
+                        this.debugLog('Cleared existing zones');
+                    } catch (e) {
+                        console.error('Error clearing existing zones:', e);
+                    }
                 }
             }
         }
-            }
         if (typeof Alpine !== 'undefined' && typeof Alpine.data === 'function') {
             Alpine.data('googleMapsDraw', googleMapsDraw);
         }
