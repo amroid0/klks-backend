@@ -99,6 +99,21 @@ class CreateZone extends CreateRecord
         return true;
     }
 
+    protected function boundariesColumnRequiresValueOnInsert(): bool
+    {
+        if (DB::getDriverName() !== 'mysql') {
+            return false;
+        }
+
+        $column = DB::selectOne("\n            SELECT IS_NULLABLE\n            FROM information_schema.COLUMNS\n            WHERE TABLE_SCHEMA = DATABASE()\n              AND TABLE_NAME = 'zones'\n              AND COLUMN_NAME = 'boundaries'\n            LIMIT 1\n        ");
+
+        if (!$column) {
+            return false;
+        }
+
+        return strtoupper((string) ($column->IS_NULLABLE ?? 'YES')) === 'NO';
+    }
+
     protected function mutateFormDataBeforeCreate(array $data): array
     {
 
@@ -110,9 +125,22 @@ class CreateZone extends CreateRecord
             $this->mapBoundaries = $boundariesJson;
         }
 
-        // Remove boundaries from data array - we'll save it separately using raw SQL
-        // This prevents the Polygon object serialization issue
-        unset($data['boundaries']);
+        // For schemas where boundaries is NOT NULL (e.g., spatial-indexed polygon),
+        // we must include a geometry value in the initial insert.
+        if ($this->boundariesColumnRequiresValueOnInsert()) {
+            $polygon = $this->convertBoundariesToPolygon($boundariesJson);
+
+            if (!$polygon) {
+                throw ValidationException::withMessages([
+                    'boundaries' => 'Please draw a valid zone boundary with at least 3 points.'
+                ]);
+            }
+
+            $data['boundaries'] = $polygon;
+        } else {
+            // Keep legacy flow for nullable schemas and apply with raw SQL after create.
+            unset($data['boundaries']);
+        }
 
         // Remove surge slot fields from data array - they're not database columns
         // and will be handled separately in afterCreate()
