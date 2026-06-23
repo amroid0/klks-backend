@@ -55,6 +55,13 @@ class Zone extends Model
         'surge_multiplier',
         'surge_start_time',
         'surge_end_time',
+        'surge_slots_day_0',
+        'surge_slots_day_1',
+        'surge_slots_day_2',
+        'surge_slots_day_3',
+        'surge_slots_day_4',
+        'surge_slots_day_5',
+        'surge_slots_day_6',
         'meta_data',
     ];
 
