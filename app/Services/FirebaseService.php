@@ -22,8 +22,8 @@ class FirebaseService
         $this->enabled = true;
 
         try {
-            $credentialsPath = config('services.firebase.credentials', base_path('public/e-taxi-649bb-firebase-adminsdk-fbsvc.json'));
-            $databaseUrl = config('services.firebase.database_url', 'https://e-taxi-649bb.firebaseio.com');
+            $credentialsPath = config('services.firebase.credentials', storage_path('app/firebase/service-account.json'));
+            $databaseUrl = config('services.firebase.database_url');
 
             if (!class_exists('Kreait\Firebase\Factory')) {
 

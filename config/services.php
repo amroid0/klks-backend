@@ -1,5 +1,15 @@
 <?php
 
+$resolvePath = static function (?string $path, string $fallback): string {
+    $path = $path ?: $fallback;
+
+    if (preg_match('/^(?:[A-Za-z]:\\\\|\\\\\\\\|\/)/', $path)) {
+        return $path;
+    }
+
+    return base_path($path);
+};
+
 return [
 
     /*
@@ -72,15 +82,15 @@ return [
 
     'fcm' => [
         'server_key' => env('FCM_SERVER_KEY'),
-        'project_id' => env('FCM_PROJECT_ID'),
+        'project_id' => env('FCM_PROJECT_ID', env('FIREBASE_PROJECT_ID')),
         'messaging_sender_id' => env('FCM_MESSAGING_SENDER_ID'),
-        'service_account_path' => base_path('public/e-taxi-649bb-firebase-adminsdk-fbsvc.json'),
+        'service_account_path' => $resolvePath(env('FCM_SERVICE_ACCOUNT_PATH'), 'storage/app/firebase/service-account.json'),
         'enabled' => env('FCM_ENABLED', true),
     ],
 
     'firebase' => [
-        'credentials' => base_path('public/e-taxi-649bb-firebase-adminsdk-fbsvc.json'),
-        'database_url' => env('FIREBASE_DATABASE_URL', 'https://e-taxi-649bb.firebaseio.com'),
+        'credentials' => $resolvePath(env('FIREBASE_CREDENTIALS'), 'storage/app/firebase/service-account.json'),
+        'database_url' => env('FIREBASE_DATABASE_URL'),
     ],
 
     /*
