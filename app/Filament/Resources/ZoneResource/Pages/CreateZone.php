@@ -46,28 +46,64 @@ class CreateZone extends CreateRecord
         }
     }
 
+    protected function resolveBoundariesJson(array $data): ?string
+    {
+        if (!empty($data['boundaries']) && $data['boundaries'] !== '[]') {
+            if (is_string($data['boundaries'])) {
+                return $data['boundaries'];
+            }
+
+            if (is_array($data['boundaries'])) {
+                return json_encode($data['boundaries']);
+            }
+        }
+
+        if (!empty($this->mapBoundaries) && $this->mapBoundaries !== '[]') {
+            return $this->mapBoundaries;
+        }
+
+        $requestBoundaries = request()->input('boundaries');
+        if (!empty($requestBoundaries) && $requestBoundaries !== '[]') {
+            return is_string($requestBoundaries) ? $requestBoundaries : json_encode($requestBoundaries);
+        }
+
+        $requestMapBoundaries = request()->input('map_boundaries');
+        if (!empty($requestMapBoundaries) && $requestMapBoundaries !== '[]') {
+            return is_string($requestMapBoundaries) ? $requestMapBoundaries : json_encode($requestMapBoundaries);
+        }
+
+        return null;
+    }
+
+    protected function isValidBoundariesJson(?string $boundariesJson): bool
+    {
+        if (empty($boundariesJson) || $boundariesJson === '[]' || $boundariesJson === 'null') {
+            return false;
+        }
+
+        $points = json_decode($boundariesJson, true);
+        if (!is_array($points) || count($points) < 3) {
+            return false;
+        }
+
+        foreach ($points as $point) {
+            if (!is_array($point) || !isset($point['lat'], $point['lng'])) {
+                return false;
+            }
+
+            if (!is_numeric($point['lat']) || !is_numeric($point['lng'])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     protected function mutateFormDataBeforeCreate(array $data): array
     {
 
         // Get boundaries JSON string - we'll save it separately using raw SQL
-        $boundariesJson = null;
-
-        if (empty($data['boundaries']) || $data['boundaries'] === null || $data['boundaries'] === '' || $data['boundaries'] === '[]') {
-            if (!empty($this->mapBoundaries) && $this->mapBoundaries !== '[]') {
-                $boundariesJson = $this->mapBoundaries;
-            } elseif ($boundariesData = request()->input('boundaries')) {
-                $boundariesJson = $boundariesData;
-            } elseif ($boundariesData = request()->input('map_boundaries')) {
-                $boundariesJson = $boundariesData;
-            }
-        } else {
-            // If boundaries is already set, check if it's a string or needs conversion
-            if (is_string($data['boundaries'])) {
-                $boundariesJson = $data['boundaries'];
-            } elseif (is_array($data['boundaries'])) {
-                $boundariesJson = json_encode($data['boundaries']);
-            }
-        }
+        $boundariesJson = $this->resolveBoundariesJson($data);
 
         // Store boundaries JSON for later use in afterCreate
         if ($boundariesJson) {
@@ -131,6 +167,15 @@ class CreateZone extends CreateRecord
     {
 
         $data = $this->form->getState();
+
+        $boundariesJson = $this->resolveBoundariesJson($data);
+        if (!$this->isValidBoundariesJson($boundariesJson)) {
+            throw ValidationException::withMessages([
+                'boundaries' => 'Please draw a valid zone boundary with at least 3 points.'
+            ]);
+        }
+
+        $this->mapBoundaries = $boundariesJson;
 
         if (isset($data['status']) && $data['status'] === true && isset($data['city_id'])) {
             $city = \App\Models\City::find($data['city_id']);

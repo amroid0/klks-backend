@@ -16,7 +16,7 @@ return new class extends Migration
             $table->string('password')->nullable();
             $table->unsignedTinyInteger('role_id')->default(3); // 1=admin, 2=driver, 3=user
             $table->string('profile_photo')->nullable();
-            $table->string('device_token')->nullable();
+            $table->text('device_token')->nullable();
             $table->boolean('is_online')->default(false);
             $table->timestamp('last_location_at')->nullable();
             $table->decimal('last_latitude', 10, 8)->nullable();
